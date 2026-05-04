@@ -1,0 +1,8 @@
+/node_modules
+.env
+/temp
+/public/videos
+/public/uploads
+*.mp4
+*.png
+*.mp3
