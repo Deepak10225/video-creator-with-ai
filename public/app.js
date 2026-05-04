@@ -96,11 +96,16 @@ generateStoryBtn.addEventListener('click', async () => {
             body: JSON.stringify({ prompt, characters })
         });
         
-        currentStory = await response.json();
+        const data = await response.json();
+        if (!response.ok) {
+            throw new Error(data.error || 'Unknown error occurred');
+        }
+        
+        currentStory = data;
         renderStoryPreview();
     } catch (error) {
         console.error(error);
-        alert('Failed to generate story. Check console.');
+        alert(`Failed to generate story: ${error.message}`);
     } finally {
         generateStoryBtn.disabled = false;
         generateStoryBtn.innerText = 'Generate Story Concept';
