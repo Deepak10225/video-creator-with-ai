@@ -139,19 +139,43 @@ createVideoBtn.addEventListener('click', async () => {
             body: JSON.stringify({ scenes: currentStory.scenes })
         });
         
-        const data = await response.json();
-        if (data.videoUrl) {
-            finalVideo.src = data.videoUrl;
-            finalVideo.classList.remove('hidden');
-            videoLoader.classList.add('hidden');
-            downloadLink.href = data.videoUrl;
-            downloadLink.classList.remove('hidden');
+        const { jobId } = await response.json();
+        if (jobId) {
+            pollVideoStatus(jobId);
         } else {
-            throw new Error('No video URL returned');
+            throw new Error('No job ID returned');
         }
     } catch (error) {
         console.error(error);
-        alert('Video generation failed. It might be due to API timeouts (DALL-E can be slow). Check server logs.');
+        alert('Video generation failed. Check server logs.');
         videoLoader.classList.add('hidden');
     }
 });
+
+async function pollVideoStatus(jobId) {
+    const statusText = videoLoader.querySelector('p');
+    
+    const interval = setInterval(async () => {
+        try {
+            const response = await fetch(`/api/video-status/${jobId}`);
+            const data = await response.json();
+            
+            if (data.status === 'completed') {
+                clearInterval(interval);
+                finalVideo.src = data.videoUrl;
+                finalVideo.classList.remove('hidden');
+                videoLoader.classList.add('hidden');
+                downloadLink.href = data.videoUrl;
+                downloadLink.classList.remove('hidden');
+            } else if (data.status === 'failed') {
+                clearInterval(interval);
+                alert(`Generation failed: ${data.error}`);
+                videoLoader.classList.add('hidden');
+            } else {
+                statusText.innerHTML = `Brewing your cinematic experience... (${data.progress}%)<br><span class="small">(This takes a few minutes)</span>`;
+            }
+        } catch (error) {
+            console.error('Polling error:', error);
+        }
+    }, 3000);
+}

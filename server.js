@@ -111,21 +111,48 @@ Return ONLY a JSON object with the following structure:
     }
 });
 
-// Endpoint to generate video
-app.post('/api/generate-video', async (req, res) => {
+// Simple in-memory job tracker
+const jobs = {};
+
+// Endpoint to check video status
+app.get('/api/video-status/:jobId', (req, res) => {
+    const job = jobs[req.params.jobId];
+    if (!job) return res.status(404).json({ error: 'Job not found' });
+    res.json(job);
+});
+
+// Updated endpoint to generate video (async)
+app.post('/api/generate-video', (req, res) => {
     const { scenes } = req.body;
-    const videoId = crypto.randomUUID();
+    const jobId = crypto.randomUUID();
+    
+    // Initialize job
+    jobs[jobId] = { status: 'processing', progress: 0 };
+    
+    // Start background process
+    generateVideoBackground(jobId, scenes).catch(err => {
+        console.error(`Job ${jobId} failed:`, err);
+        jobs[jobId] = { status: 'failed', error: err.message };
+    });
+    
+    // Return jobId immediately to avoid timeout
+    res.json({ jobId });
+});
+
+async function generateVideoBackground(jobId, scenes) {
+    const videoId = jobId;
     const tempDir = path.join(__dirname, 'temp', videoId);
-    fs.mkdirSync(tempDir);
+    if (!fs.existsSync(tempDir)) fs.mkdirSync(tempDir, { recursive: true });
 
     try {
-        console.log(`Starting video generation: ${videoId}`);
+        console.log(`Starting background video generation: ${videoId}`);
         
         // 1. Generate Assets (Images and Audio)
         const sceneAssets = [];
         for (let i = 0; i < scenes.length; i++) {
             const scene = scenes[i];
             console.log(`Processing scene ${i + 1}/${scenes.length}`);
+            jobs[jobId].progress = Math.round((i / (scenes.length * 2)) * 100);
 
             // Generate Image
             const imageResponse = await openai.images.generate({
@@ -137,7 +164,6 @@ app.post('/api/generate-video', async (req, res) => {
             const imageUrl = imageResponse.data[0].url;
             const imagePath = path.join(tempDir, `scene_${i}.png`);
             
-            // Download image
             const imgRes = await fetch(imageUrl);
             const imgBuffer = Buffer.from(await imgRes.arrayBuffer());
             fs.writeFileSync(imagePath, imgBuffer);
@@ -155,33 +181,24 @@ app.post('/api/generate-video', async (req, res) => {
             sceneAssets.push({ image: imagePath, audio: audioPath });
         }
 
-        // 2. Create Scene Videos (Image + Audio)
+        // 2. Create Scene Videos
         const sceneVideos = [];
         for (let i = 0; i < sceneAssets.length; i++) {
             const asset = sceneAssets[i];
             const sceneVideoPath = path.join(tempDir, `scene_${i}.mp4`);
+            jobs[jobId].progress = 50 + Math.round((i / (sceneAssets.length * 2)) * 100);
             
             await new Promise((resolve, reject) => {
                 ffmpeg()
                     .input(asset.image)
-                    .loop(5) // Default duration if audio fails, but we'll sync with audio
+                    .loop(5)
                     .input(asset.audio)
                     .videoFilters([
-                        {
-                            filter: 'scale',
-                            options: 'w=1280:h=720:force_original_aspect_ratio=decrease'
-                        },
-                        {
-                            filter: 'pad',
-                            options: '1280:720:(ow-iw)/2:(oh-ih)/2'
-                        },
-                        // Ken Burns Effect (Zoom)
-                        {
-                            filter: 'zoompan',
-                            options: 'z=\'min(zoom+0.0015,1.5)\':d=125:x=\'iw/2-(iw/zoom/2)\':y=\'ih/2-(ih/zoom/2)\':s=1280x720'
-                        }
+                        { filter: 'scale', options: 'w=1280:h=720:force_original_aspect_ratio=decrease' },
+                        { filter: 'pad', options: '1280:720:(ow-iw)/2:(oh-ih)/2' },
+                        { filter: 'zoompan', options: 'z=\'min(zoom+0.0015,1.5)\':d=125:x=\'iw/2-(iw/zoom/2)\':y=\'ih/2-(ih/zoom/2)\':s=1280x720' }
                     ])
-                    .outputOptions('-shortest') // Sync video length to audio length
+                    .outputOptions('-shortest')
                     .output(sceneVideoPath)
                     .on('end', resolve)
                     .on('error', reject)
@@ -190,7 +207,7 @@ app.post('/api/generate-video', async (req, res) => {
             sceneVideos.push(sceneVideoPath);
         }
 
-        // 3. Concatenate Scene Videos
+        // 3. Concatenate
         const finalVideoPath = path.join(__dirname, 'public', 'videos', `${videoId}.mp4`);
         const listFilePath = path.join(tempDir, 'list.txt');
         const listContent = sceneVideos.map(v => `file '${v}'`).join('\n');
@@ -207,15 +224,19 @@ app.post('/api/generate-video', async (req, res) => {
                 .run();
         });
 
-        // Cleanup temp files (optional, maybe keep for debug)
-        // fs.rmSync(tempDir, { recursive: true, force: true });
+        // Update Job Status
+        jobs[jobId] = { 
+            status: 'completed', 
+            videoUrl: `/videos/${videoId}.mp4`,
+            progress: 100 
+        };
+        console.log(`Job ${jobId} completed successfully`);
 
-        res.json({ videoUrl: `/videos/${videoId}.mp4` });
     } catch (error) {
-        console.error('Video Generation Error:', error);
-        res.status(500).json({ error: 'Failed to generate video' });
+        console.error('Background Generation Error:', error);
+        jobs[jobId] = { status: 'failed', error: error.message };
     }
-});
+}
 
 app.listen(port, () => {
     console.log(`Server running at http://localhost:${port}`);
