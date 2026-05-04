@@ -166,59 +166,58 @@ async function runVideoGeneration(jobId, scenes) {
         setProgress(5, 'Preparing assets...');
 
         const sceneAssets = [];
-        const assetPromises = scenes.map(async (scene, i) => {
-            console.log(`  Processing scene ${i + 1} assets in parallel...`);
-            
-            // Generate image and audio concurrently for this scene
-            const [imageUrl, audio] = await Promise.all([
-                (async () => {
-                    let url;
-                    const safePrompt = scene.visual_prompt + ', animated cartoon style, family-friendly, vibrant colors, no humans, no real people, no copyrighted characters';
-                    // Try the primary prompt, then fallback
-                    for (const prompt of [safePrompt, 'Beautiful colorful jungle landscape, animated cartoon style, vibrant, cinematic']) {
-                        try {
-                            const imgResp = await openai.images.generate({
-                                model: 'dall-e-3',
-                                prompt,
-                                n: 1,
-                                size: '1024x1024',
-                                quality: 'standard'
-                            });
-                            url = imgResp.data[0].url;
-                            break;
-                        } catch (e) {
-                            console.warn(`  ⚠️ Scene ${i+1} image attempt failed: ${e.message.slice(0, 60)}`);
-                        }
-                    }
-                    if (!url) throw new Error(`Failed to generate image for scene ${i + 1}`);
-                    return url;
-                })(),
-                openai.audio.speech.create({
-                    model: 'tts-1',
-                    voice: scene.voice || 'alloy',
-                    input: scene.narration,
-                    speed: 0.9
-                })
-            ]);
+        for (let i = 0; i < scenes.length; i++) {
+            const scene = scenes[i];
+            setProgress(10 + Math.round((i / scenes.length) * 60), `Generating scene ${i + 1} of ${scenes.length}...`);
 
-            // Save image
+            // Generate image and audio for this scene
+            let imageUrl;
+            try {
+                const safePrompt = scene.visual_prompt + ', animated cartoon style, family-friendly, vibrant colors, no humans, no real people, no copyrighted characters';
+                const imgResp = await openai.images.generate({
+                    model: 'dall-e-3',
+                    prompt: safePrompt,
+                    n: 1,
+                    size: '1024x1024',
+                    quality: 'standard'
+                });
+                imageUrl = imgResp.data[0].url;
+            } catch (e) {
+                console.warn(`  ⚠️ Scene ${i+1} image failed: ${e.message.slice(0, 50)} - using fallback`);
+                const fallback = await openai.images.generate({
+                    model: 'dall-e-3',
+                    prompt: 'Beautiful colorful jungle landscape, animated cartoon style, vibrant, cinematic',
+                    n: 1,
+                    size: '1024x1024'
+                });
+                imageUrl = fallback.data[0].url;
+            }
+
+            const audio = await openai.audio.speech.create({
+                model: 'tts-1',
+                voice: scene.voice || 'alloy',
+                input: scene.narration,
+                speed: 0.9
+            });
+
+            // Save image (streaming)
             const imgPath = path.join(tempDir, `scene_${i}.jpg`);
-            const imgData = await fetch(imageUrl);
-            fs.writeFileSync(imgPath, Buffer.from(await imgData.arrayBuffer()));
+            const imgRes = await fetch(imageUrl);
+            const dest = fs.createWriteStream(imgPath);
+            const reader = imgRes.body.getReader();
+            while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+                dest.write(value);
+            }
+            dest.end();
 
             // Save audio
             const audioPath = path.join(tempDir, `scene_${i}.mp3`);
             fs.writeFileSync(audioPath, Buffer.from(await audio.arrayBuffer()));
 
-            return { index: i, image: imgPath, audio: audioPath };
-        });
-
-        // Wait for all scenes to finish asset generation
-        const results = await Promise.all(assetPromises);
-        // Ensure they are in the correct order
-        results.sort((a, b) => a.index - b.index).forEach(res => {
-            sceneAssets.push({ image: res.image, audio: res.audio });
-        });
+            sceneAssets.push({ image: imgPath, audio: audioPath });
+        }
 
         setProgress(70, 'Processing video scenes...');
 
@@ -237,6 +236,7 @@ async function runVideoGeneration(jobId, scenes) {
                         `[0:v]scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,setsar=1,zoompan=z='min(zoom+0.001,1.3)':d=150:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s=1280x720[v]`
                     ])
                     .outputOptions([
+                        '-threads 1',
                         '-map [v]',
                         '-map 1:a',
                         '-c:v libx264',
