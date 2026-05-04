@@ -8,270 +8,277 @@ const ffmpeg = require('fluent-ffmpeg');
 const ffmpegInstaller = require('ffmpeg-static');
 const multer = require('multer');
 
-// Set ffmpeg path
+// ─── Setup ───────────────────────────────────────────────────────────────────
 ffmpeg.setFfmpegPath(ffmpegInstaller);
 
 const app = express();
 const port = process.env.PORT || 3000;
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
-app.use(express.json());
-app.use(express.static('public'));
+app.use(express.json({ limit: '50mb' }));
+app.use(express.static(path.join(__dirname, 'public')));
 
-// Create necessary directories
-const dirs = ['public/videos', 'public/uploads', 'temp'];
-dirs.forEach(dir => {
-    if (!fs.existsSync(dir)) {
-        fs.mkdirSync(dir, { recursive: true });
-    }
+// Create dirs
+['public/videos', 'public/uploads', 'temp'].forEach(d => {
+    if (!fs.existsSync(d)) fs.mkdirSync(d, { recursive: true });
 });
 
-// Multer storage setup
+// ─── Multer (character image upload) ─────────────────────────────────────────
 const storage = multer.diskStorage({
     destination: 'public/uploads/',
-    filename: (req, file, cb) => {
-        cb(null, Date.now() + path.extname(file.originalname));
-    }
+    filename: (req, file, cb) => cb(null, Date.now() + path.extname(file.originalname))
 });
-const upload = multer({ storage });
+const upload = multer({ storage, limits: { fileSize: 10 * 1024 * 1024 } });
 
-// Endpoint for character image upload
+// ─── Job tracker ─────────────────────────────────────────────────────────────
+const jobs = {};
+
+// ─── Routes ──────────────────────────────────────────────────────────────────
+
+// Upload character image
 app.post('/api/upload-character', upload.single('image'), (req, res) => {
-    if (!req.file) return res.status(400).json({ error: 'No image uploaded' });
+    if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
     res.json({ imageUrl: `/uploads/${req.file.filename}` });
 });
 
-// Endpoint to generate story
+// Generate Story
 app.post('/api/generate-story', async (req, res) => {
     try {
-        const { prompt, characters } = req.body;
-        if (!prompt) return res.status(400).json({ error: 'Prompt is required' });
+        const { prompt, characters = [] } = req.body;
+        if (!prompt || !prompt.trim()) {
+            return res.status(400).json({ error: 'Please enter a story prompt' });
+        }
 
-        console.log(`Generating story for prompt: "${prompt}"`);
-        
-        // Analyze character images if they exist
-        const analyzedCharacters = await Promise.all(characters.map(async (char) => {
+        console.log(`\n📖 Generating story: "${prompt}"`);
+
+        // Analyze uploaded character images via GPT-4o Vision
+        for (const char of characters) {
             if (char.imageUrl) {
                 try {
-                    console.log(`Analyzing character image for ${char.name}...`);
-                    // Fix path: remove leading slash if present
-                    const relativePath = char.imageUrl.startsWith('/') ? char.imageUrl.substring(1) : char.imageUrl;
-                    const imagePath = path.join(__dirname, 'public', relativePath);
-                    
-                    if (!fs.existsSync(imagePath)) {
-                        console.warn(`Character image not found at ${imagePath}`);
-                        return char;
-                    }
-
-                    const base64Image = fs.readFileSync(imagePath).toString('base64');
-                    const extension = path.extname(imagePath).replace('.', '') || 'png';
-                    
-                    const visionResponse = await openai.chat.completions.create({
-                        model: "gpt-4o",
-                        messages: [
-                            {
-                                role: "user",
+                    const imgPath = path.join(__dirname, 'public', char.imageUrl.replace(/^\//, ''));
+                    if (fs.existsSync(imgPath)) {
+                        const ext = path.extname(imgPath).slice(1) || 'jpeg';
+                        const b64 = fs.readFileSync(imgPath).toString('base64');
+                        const vision = await openai.chat.completions.create({
+                            model: 'gpt-4o',
+                            max_tokens: 200,
+                            messages: [{
+                                role: 'user',
                                 content: [
-                                    { type: "text", text: "Describe this character's appearance in detail for an image generation prompt. Focus on hair, clothes, facial features, and style. Keep it concise." },
-                                    {
-                                        type: "image_url",
-                                        image_url: { url: `data:image/${extension};base64,${base64Image}` }
-                                    }
-                                ],
-                            },
-                        ],
-                    });
-                    char.visualDescription = visionResponse.choices[0].message.content;
-                    console.log(`Successfully analyzed ${char.name}`);
-                } catch (visionErr) {
-                    console.error(`Vision analysis failed for ${char.name}:`, visionErr.message);
-                    // Continue without visual description if vision fails
+                                    { type: 'text', text: 'Describe this character\'s visual appearance in one concise paragraph for use in image generation prompts (focus on: species/type, color, clothing, features).' },
+                                    { type: 'image_url', image_url: { url: `data:image/${ext};base64,${b64}` } }
+                                ]
+                            }]
+                        });
+                        char.visualDescription = vision.choices[0].message.content;
+                        console.log(`  ✅ Analyzed ${char.name}`);
+                    }
+                } catch (e) {
+                    console.warn(`  ⚠️  Vision failed for ${char.name}: ${e.message}`);
                 }
             }
-            return char;
-        }));
+        }
 
-        const characterContext = analyzedCharacters && analyzedCharacters.length > 0 
-            ? `Characters: ${analyzedCharacters.map(c => `${c.name} (${c.description}). Visual Description: ${c.visualDescription || 'Not provided'}`).join(', ')}`
+        const charContext = characters.length > 0
+            ? 'Characters:\n' + characters.map(c =>
+                `- ${c.name}: ${c.description || ''}${c.visualDescription ? '. Appearance: ' + c.visualDescription : ''}`
+              ).join('\n')
             : '';
 
-        const systemPrompt = `You are a creative storyteller. Generate a detailed story (5-6 scenes) based on the user's prompt and characters.
-Aim for a total duration of approximately 1 minute. Each scene should have descriptive narration (approx 20-30 words each).
-IMPORTANT: The story (narration and title) MUST be in Hindi.
-Visual Prompts: Create DALL-E 3 prompts in ENGLISH. Ensure they are cinematic, safe, and do not violate copyright or safety guidelines. Avoid gore, hyper-realism, or controversial themes.
-Return ONLY a JSON object with the following structure:
+        const systemPrompt = `You are a Hindi storyteller for children and families. Create a 1-minute animated video story with exactly 5 scenes.
+
+RULES:
+- Title and all narration MUST be in Hindi (Devanagari script)
+- Each narration must be 25-35 words in Hindi (to last ~10 seconds when spoken)
+- Visual prompts must be in English, family-friendly, cinematic, and DALL-E safe (no violence, no real people, no copyrighted characters)
+- Choose voice: onyx=deep/male, nova=warm/female, shimmer=clear/neutral, alloy=calm, echo=smooth, fable=storytelling
+- For animals: use onyx for lions/bears, shimmer for parrots/birds, nova for gentle animals
+
+Return ONLY valid JSON, no markdown, no code blocks:
 {
-  "title": "Hindi Story Title",
+  "title": "...",
   "scenes": [
     {
-      "narration": "The detailed spoken text for this scene in Hindi.",
-      "voice": "One of: alloy, echo, fable, onyx, nova, shimmer.",
-      "visual_prompt": "A safe, cinematic DALL-E 3 prompt in ENGLISH.",
-      "duration": 10
+      "narration": "Hindi text here",
+      "voice": "alloy",
+      "visual_prompt": "Detailed English prompt for DALL-E, cinematic, high quality digital art"
     }
   ]
 }`;
 
-        console.log("Calling GPT-4o for story generation...");
-        const response = await openai.chat.completions.create({
-            model: "gpt-4o",
+        const completion = await openai.chat.completions.create({
+            model: 'gpt-4o',
+            response_format: { type: 'json_object' },
+            temperature: 0.8,
             messages: [
-                { role: "system", content: systemPrompt },
-                { role: "user", content: `Prompt: ${prompt}\n${characterContext}` }
-            ],
-            response_format: { type: "json_object" }
+                { role: 'system', content: systemPrompt },
+                { role: 'user', content: `Story prompt: ${prompt}\n\n${charContext}` }
+            ]
         });
 
-        const story = JSON.parse(response.choices[0].message.content);
-        console.log("Story generated successfully!");
+        const story = JSON.parse(completion.choices[0].message.content);
+        
+        // Validate
+        if (!story.title || !Array.isArray(story.scenes) || story.scenes.length === 0) {
+            throw new Error('Invalid story format returned by AI');
+        }
+
+        console.log(`  ✅ Story "${story.title}" with ${story.scenes.length} scenes`);
         res.json(story);
-    } catch (error) {
-        console.error('Error generating story:', error);
-        res.status(500).json({ error: error.message || 'Failed to generate story' });
+
+    } catch (err) {
+        console.error('❌ Story generation error:', err.message);
+        res.status(500).json({ error: err.message });
     }
 });
 
-// Simple in-memory job tracker
-const jobs = {};
+// Start Video Generation (async)
+app.post('/api/generate-video', (req, res) => {
+    const { scenes } = req.body;
+    if (!scenes || !Array.isArray(scenes) || scenes.length === 0) {
+        return res.status(400).json({ error: 'No scenes provided' });
+    }
+    const jobId = crypto.randomUUID();
+    jobs[jobId] = { status: 'processing', progress: 0, message: 'Starting...' };
+    runVideoGeneration(jobId, scenes);
+    res.json({ jobId });
+});
 
-// Endpoint to check video status
+// Poll Video Status
 app.get('/api/video-status/:jobId', (req, res) => {
     const job = jobs[req.params.jobId];
     if (!job) return res.status(404).json({ error: 'Job not found' });
     res.json(job);
 });
 
-// Updated endpoint to generate video (async)
-app.post('/api/generate-video', (req, res) => {
-    const { scenes } = req.body;
-    const jobId = crypto.randomUUID();
-    
-    // Initialize job
-    jobs[jobId] = { status: 'processing', progress: 0 };
-    
-    // Start background process
-    generateVideoBackground(jobId, scenes).catch(err => {
-        console.error(`Job ${jobId} failed:`, err);
-        jobs[jobId] = { status: 'failed', error: err.message };
-    });
-    
-    // Return jobId immediately to avoid timeout
-    res.json({ jobId });
-});
+// ─── Background video generator ──────────────────────────────────────────────
+async function runVideoGeneration(jobId, scenes) {
+    const tempDir = path.join(__dirname, 'temp', jobId);
+    fs.mkdirSync(tempDir, { recursive: true });
 
-async function generateVideoBackground(jobId, scenes) {
-    const videoId = jobId;
-    const tempDir = path.join(__dirname, 'temp', videoId);
-    if (!fs.existsSync(tempDir)) fs.mkdirSync(tempDir, { recursive: true });
+    const setProgress = (progress, message) => {
+        jobs[jobId] = { ...jobs[jobId], status: 'processing', progress, message };
+        console.log(`  [${jobId.slice(0, 6)}] ${progress}% - ${message}`);
+    };
 
     try {
-        console.log(`Starting background video generation: ${videoId}`);
-        
-        // 1. Generate Assets (Images and Audio)
+        console.log(`\n🎬 Starting video job ${jobId.slice(0, 8)}... (${scenes.length} scenes)`);
+        setProgress(5, 'Preparing assets...');
+
         const sceneAssets = [];
+
         for (let i = 0; i < scenes.length; i++) {
             const scene = scenes[i];
-            console.log(`Processing scene ${i + 1}/${scenes.length}`);
-            jobs[jobId].progress = Math.round((i / (scenes.length * 2)) * 100);
+            const pct = Math.round(10 + (i / scenes.length) * 60);
+            setProgress(pct, `Generating scene ${i + 1} of ${scenes.length}...`);
 
-            // Generate Image
+            // Generate image with safety fallback
             let imageUrl;
-            try {
-                const imageResponse = await openai.images.generate({
-                    model: "dall-e-3",
-                    prompt: scene.visual_prompt,
-                    n: 1,
-                    size: "1024x1024",
-                });
-                imageUrl = imageResponse.data[0].url;
-            } catch (imgError) {
-                console.error(`Image generation failed for scene ${i}:`, imgError.message);
-                // If it's a safety error, try a generic safe fallback
-                const fallbackPrompt = "A beautiful cinematic digital art landscape, soft lighting, peaceful atmosphere";
-                const fallbackResponse = await openai.images.generate({
-                    model: "dall-e-3",
-                    prompt: fallbackPrompt,
-                    n: 1,
-                    size: "1024x1024",
-                });
-                imageUrl = fallbackResponse.data[0].url;
+            const safePrompt = scene.visual_prompt + ', animated cartoon style, family-friendly, vibrant colors, no humans, no real people, no copyrighted characters';
+            for (const prompt of [safePrompt, 'Beautiful colorful jungle landscape, animated cartoon style, vibrant, cinematic']) {
+                try {
+                    const imgResp = await openai.images.generate({
+                        model: 'dall-e-3',
+                        prompt,
+                        n: 1,
+                        size: '1024x1024',
+                        quality: 'standard'
+                    });
+                    imageUrl = imgResp.data[0].url;
+                    break;
+                } catch (e) {
+                    console.warn(`  ⚠️  Image attempt failed: ${e.message.slice(0, 60)}`);
+                }
             }
-            
-            const imagePath = path.join(tempDir, `scene_${i}.png`);
-            const imgRes = await fetch(imageUrl);
-            const imgBuffer = Buffer.from(await imgRes.arrayBuffer());
-            fs.writeFileSync(imagePath, imgBuffer);
 
-            // Generate Audio
+            if (!imageUrl) throw new Error(`Failed to generate image for scene ${i + 1}`);
+
+            // Download image
+            const imgPath = path.join(tempDir, `scene_${i}.jpg`);
+            const imgData = await fetch(imageUrl);
+            fs.writeFileSync(imgPath, Buffer.from(await imgData.arrayBuffer()));
+
+            // Generate audio
             const audioPath = path.join(tempDir, `scene_${i}.mp3`);
-            const mp3 = await openai.audio.speech.create({
-                model: "tts-1",
-                voice: scene.voice || "alloy",
+            const audio = await openai.audio.speech.create({
+                model: 'tts-1',
+                voice: scene.voice || 'alloy',
                 input: scene.narration,
+                speed: 0.9
             });
-            const audioBuffer = Buffer.from(await mp3.arrayBuffer());
-            fs.writeFileSync(audioPath, audioBuffer);
+            fs.writeFileSync(audioPath, Buffer.from(await audio.arrayBuffer()));
 
-            sceneAssets.push({ image: imagePath, audio: audioPath });
+            sceneAssets.push({ image: imgPath, audio: audioPath });
         }
 
-        // 2. Create Scene Videos
+        setProgress(70, 'Processing video scenes...');
+
+        // Build each scene video
         const sceneVideos = [];
         for (let i = 0; i < sceneAssets.length; i++) {
-            const asset = sceneAssets[i];
-            const sceneVideoPath = path.join(tempDir, `scene_${i}.mp4`);
-            jobs[jobId].progress = 50 + Math.round((i / (sceneAssets.length * 2)) * 100);
-            
+            const { image, audio } = sceneAssets[i];
+            const outPath = path.join(tempDir, `clip_${i}.mp4`);
+
             await new Promise((resolve, reject) => {
                 ffmpeg()
-                    .input(asset.image)
-                    .loop(5)
-                    .input(asset.audio)
-                    .videoFilters([
-                        { filter: 'scale', options: 'w=1280:h=720:force_original_aspect_ratio=decrease' },
-                        { filter: 'pad', options: '1280:720:(ow-iw)/2:(oh-ih)/2' },
-                        { filter: 'zoompan', options: 'z=\'min(zoom+0.0015,1.5)\':d=125:x=\'iw/2-(iw/zoom/2)\':y=\'ih/2-(ih/zoom/2)\':s=1280x720' }
+                    .input(image)
+                    .inputOptions(['-loop 1'])
+                    .input(audio)
+                    .complexFilter([
+                        `[0:v]scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,setsar=1,zoompan=z='min(zoom+0.001,1.3)':d=150:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s=1280x720[v]`
                     ])
-                    .outputOptions('-shortest')
-                    .output(sceneVideoPath)
-                    .on('end', resolve)
+                    .outputOptions([
+                        '-map [v]',
+                        '-map 1:a',
+                        '-c:v libx264',
+                        '-c:a aac',
+                        '-pix_fmt yuv420p',
+                        '-shortest',
+                        '-movflags +faststart'
+                    ])
+                    .output(outPath)
+                    .on('end', () => { sceneVideos.push(outPath); resolve(); })
                     .on('error', reject)
                     .run();
             });
-            sceneVideos.push(sceneVideoPath);
+
+            setProgress(70 + Math.round((i + 1) / sceneAssets.length * 20), `Rendered scene ${i + 1}/${sceneAssets.length}`);
         }
 
-        // 3. Concatenate
-        const finalVideoPath = path.join(__dirname, 'public', 'videos', `${videoId}.mp4`);
-        const listFilePath = path.join(tempDir, 'list.txt');
-        const listContent = sceneVideos.map(v => `file '${v}'`).join('\n');
-        fs.writeFileSync(listFilePath, listContent);
+        setProgress(92, 'Concatenating final video...');
 
+        // Concatenate all scene clips
+        const listFile = path.join(tempDir, 'list.txt');
+        fs.writeFileSync(listFile, sceneVideos.map(v => `file '${v}'`).join('\n'));
+
+        const finalVideo = path.join(__dirname, 'public', 'videos', `${jobId}.mp4`);
         await new Promise((resolve, reject) => {
             ffmpeg()
-                .input(listFilePath)
+                .input(listFile)
                 .inputOptions(['-f concat', '-safe 0'])
-                .outputOptions('-c copy')
-                .output(finalVideoPath)
+                .outputOptions(['-c copy'])
+                .output(finalVideo)
                 .on('end', resolve)
                 .on('error', reject)
                 .run();
         });
 
-        // Update Job Status
-        jobs[jobId] = { 
-            status: 'completed', 
-            videoUrl: `/videos/${videoId}.mp4`,
-            progress: 100 
+        jobs[jobId] = {
+            status: 'completed',
+            progress: 100,
+            message: 'Done!',
+            videoUrl: `/videos/${jobId}.mp4`
         };
-        console.log(`Job ${jobId} completed successfully`);
+        console.log(`\n✅ Video job ${jobId.slice(0, 8)} complete!`);
 
-    } catch (error) {
-        console.error('Background Generation Error:', error);
-        jobs[jobId] = { status: 'failed', error: error.message };
+    } catch (err) {
+        console.error(`\n❌ Video job ${jobId.slice(0, 8)} failed:`, err.message);
+        jobs[jobId] = { status: 'failed', progress: 0, message: err.message, error: err.message };
     }
 }
 
+// ─── Start ────────────────────────────────────────────────────────────────────
 app.listen(port, () => {
-    console.log(`Server running at http://localhost:${port}`);
+    console.log(`\n🚀 Server running at http://localhost:${port}`);
+    console.log(`   OpenAI Key: ${process.env.OPENAI_API_KEY ? '✅ Set' : '❌ MISSING!'}`);
 });

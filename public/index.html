@@ -1,68 +1,82 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="hi">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>AI Cinematic Storyteller</title>
+    <title>AI कहानी & वीडियो निर्माता</title>
+    <meta name="description" content="अपनी कहानी टाइप करें और AI से एनिमेटेड हिंदी वीडियो बनाएं।">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;800;900&family=Noto+Sans+Devanagari:wght@400;600&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="style.css">
-    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;800&family=Inter:wght@300;400;600&display=swap" rel="stylesheet">
 </head>
 <body>
-    <div class="background-blobs">
-        <div class="blob blob-1"></div>
-        <div class="blob blob-2"></div>
-        <div class="blob blob-3"></div>
+    <!-- Animated background -->
+    <div class="bg-blobs">
+        <div class="blob b1"></div>
+        <div class="blob b2"></div>
+        <div class="blob b3"></div>
     </div>
 
-    <main class="app-container">
+    <div class="container">
+        <!-- Header -->
         <header>
-            <h1 class="glitch" data-text="CINEMATIC AI">CINEMATIC AI</h1>
-            <p class="subtitle">Turn your imagination into animated stories</p>
+            <div class="logo">🎬</div>
+            <h1>AI कहानी निर्माता</h1>
+            <p class="tagline">अपनी कल्पना को 1 मिनट की एनिमेटेड हिंदी कहानी में बदलें</p>
         </header>
 
-        <section class="setup-section glass">
-            <div class="input-group">
-                <label for="story-prompt">What's the story about?</label>
-                <textarea id="story-prompt" placeholder="A futuristic city where robots dream of nature..."></textarea>
+        <!-- Step 1: Story Setup -->
+        <section class="card" id="step-setup">
+            <div class="step-label"><span>01</span> कहानी का विषय</div>
+
+            <div class="field">
+                <label for="story-prompt">आपकी कहानी किसके बारे में है?</label>
+                <textarea id="story-prompt" rows="3" placeholder="जैसे: एक शेर और तोते की दोस्ती की कहानी, या एक हाथी जो उड़ना चाहता था..."></textarea>
             </div>
 
-            <div class="character-management">
-                <h3>Characters</h3>
-                <div id="character-list" class="character-list"></div>
-                <div class="add-character-row">
-                    <input type="text" id="char-name" placeholder="Name">
-                    <input type="text" id="char-desc" placeholder="Brief description">
-                    <div class="file-input-wrapper">
-                        <label for="char-image" class="file-label">Upload Image</label>
-                        <input type="file" id="char-image" accept="image/*" class="hidden">
-                    </div>
-                    <button id="btn-add-char" class="secondary-btn">Add</button>
+            <!-- Characters -->
+            <div class="field">
+                <label>पात्र (Characters) — <span style="font-weight:400;font-size:0.85rem;opacity:0.7">वैकल्पिक है, फोटो अपलोड करें या सिर्फ नाम दें</span></label>
+                <div id="char-list" class="char-list"></div>
+                <div class="char-row">
+                    <input type="text" id="char-name" placeholder="नाम (जैसे: शेर राजा)">
+                    <input type="text" id="char-desc" placeholder="विवरण (जैसे: दयालु शेर)">
+                    <label class="upload-btn" id="char-img-label" for="char-img-input">
+                        📷 फोटो
+                        <input type="file" id="char-img-input" accept="image/*" hidden>
+                    </label>
+                    <button class="btn-add" id="btn-add-char">+ जोड़ें</button>
                 </div>
             </div>
 
-            <button id="btn-generate-story" class="primary-btn">Generate Story Concept</button>
+            <button class="btn-primary" id="btn-generate-story">
+                <span class="btn-icon">✨</span> कहानी बनाएं
+            </button>
         </section>
 
-        <section id="story-preview" class="story-preview hidden">
-            <div class="glass">
-                <h2 id="preview-title"></h2>
-                <div id="scenes-container"></div>
-                <button id="btn-create-video" class="primary-btn pulse">Create Animated Video</button>
-            </div>
+        <!-- Step 2: Story Preview -->
+        <section class="card hidden" id="step-preview">
+            <div class="step-label"><span>02</span> कहानी का पूर्वावलोकन</div>
+            <h2 id="story-title" class="story-title"></h2>
+            <div id="scenes-list" class="scenes-list"></div>
+            <button class="btn-primary" id="btn-make-video">
+                <span class="btn-icon">🎬</span> 1 मिनट का वीडियो बनाएं
+            </button>
         </section>
 
-        <section id="video-section" class="video-section hidden">
-            <div class="glass">
-                <h2>Your Masterpiece</h2>
-                <div class="video-placeholder" id="video-loader">
-                    <div class="spinner"></div>
-                    <p>Brewing your cinematic experience...<br><span class="small">(This takes a few minutes)</span></p>
+        <!-- Step 3: Video -->
+        <section class="card hidden" id="step-video">
+            <div class="step-label"><span>03</span> आपका वीडियो</div>
+            <div id="progress-wrap">
+                <div class="progress-bar-bg">
+                    <div class="progress-bar-fill" id="progress-fill"></div>
                 </div>
-                <video id="final-video" controls class="hidden"></video>
-                <a id="download-link" href="#" download class="secondary-btn hidden">Download Video</a>
+                <p id="progress-text">शुरू हो रहा है...</p>
             </div>
+            <video id="result-video" controls class="hidden"></video>
+            <a id="download-btn" href="#" download class="btn-download hidden">⬇️ वीडियो डाउनलोड करें</a>
         </section>
-    </main>
+    </div>
 
     <script src="app.js"></script>
 </body>

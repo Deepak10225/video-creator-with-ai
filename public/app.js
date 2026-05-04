@@ -1,186 +1,196 @@
+/* ========================================
+   AI Story & Video Creator — app.js
+   ======================================== */
+
+'use strict';
+
+// ─── State ────────────────────────────────────────────────────────────────────
 let characters = [];
-let currentStory = null;
+let story = null;
+let pendingImageUrl = null;
 
-const charNameInput = document.getElementById('char-name');
-const charDescInput = document.getElementById('char-desc');
-const charImageInput = document.getElementById('char-image');
-const charImageLabel = document.querySelector('.file-label');
-const addCharBtn = document.getElementById('btn-add-char');
-const charList = document.getElementById('character-list');
-const storyPrompt = document.getElementById('story-prompt');
-const generateStoryBtn = document.getElementById('btn-generate-story');
-const storyPreview = document.getElementById('story-preview');
-const previewTitle = document.getElementById('preview-title');
-const scenesContainer = document.getElementById('scenes-container');
-const createVideoBtn = document.getElementById('btn-create-video');
-const videoSection = document.getElementById('video-section');
-const videoLoader = document.getElementById('video-loader');
-const finalVideo = document.getElementById('final-video');
-const downloadLink = document.getElementById('download-link');
+// ─── DOM refs ─────────────────────────────────────────────────────────────────
+const elStoryPrompt   = document.getElementById('story-prompt');
+const elCharName      = document.getElementById('char-name');
+const elCharDesc      = document.getElementById('char-desc');
+const elCharImgInput  = document.getElementById('char-img-input');
+const elCharImgLabel  = document.getElementById('char-img-label');
+const elCharList      = document.getElementById('char-list');
+const elBtnAddChar    = document.getElementById('btn-add-char');
+const elBtnGenStory   = document.getElementById('btn-generate-story');
 
-let uploadedImageUrl = null;
+const elStepPreview   = document.getElementById('step-preview');
+const elStoryTitle    = document.getElementById('story-title');
+const elScenesList    = document.getElementById('scenes-list');
+const elBtnMakeVideo  = document.getElementById('btn-make-video');
 
-// Handle image upload change
-charImageInput.addEventListener('change', async () => {
-    const file = charImageInput.files[0];
+const elStepVideo     = document.getElementById('step-video');
+const elProgressFill  = document.getElementById('progress-fill');
+const elProgressText  = document.getElementById('progress-text');
+const elResultVideo   = document.getElementById('result-video');
+const elDownloadBtn   = document.getElementById('download-btn');
+
+// ─── Character image upload ───────────────────────────────────────────────────
+elCharImgInput.addEventListener('change', async () => {
+    const file = elCharImgInput.files[0];
     if (!file) return;
 
-    charImageLabel.innerText = 'Uploading...';
-    
-    const formData = new FormData();
-    formData.append('image', file);
+    elCharImgLabel.textContent = '⏳ अपलोड...';
+    elCharImgLabel.classList.remove('ready');
+
+    const form = new FormData();
+    form.append('image', file);
 
     try {
-        const response = await fetch('/api/upload-character', {
-            method: 'POST',
-            body: formData
-        });
-        const data = await response.json();
-        uploadedImageUrl = data.imageUrl;
-        charImageLabel.innerText = 'Image Ready!';
-        charImageLabel.classList.add('uploaded');
-    } catch (error) {
-        console.error(error);
-        charImageLabel.innerText = 'Upload Failed';
+        const res = await fetch('/api/upload-character', { method: 'POST', body: form });
+        if (!res.ok) throw new Error(await res.text());
+        const { imageUrl } = await res.json();
+        pendingImageUrl = imageUrl;
+        elCharImgLabel.textContent = '✅ तैयार!';
+        elCharImgLabel.classList.add('ready');
+    } catch (e) {
+        console.error('Upload error:', e);
+        elCharImgLabel.textContent = '❌ विफल';
+        pendingImageUrl = null;
     }
 });
 
-// Character Management
-addCharBtn.addEventListener('click', () => {
-    const name = charNameInput.value.trim();
-    const desc = charDescInput.value.trim();
-    if (name) {
-        characters.push({ 
-            name, 
-            description: desc, 
-            imageUrl: uploadedImageUrl 
-        });
-        renderCharacters();
-        // Reset
-        charNameInput.value = '';
-        charDescInput.value = '';
-        charImageInput.value = '';
-        charImageLabel.innerText = 'Upload Image';
-        charImageLabel.classList.remove('uploaded');
-        uploadedImageUrl = null;
-    }
+// ─── Add character ────────────────────────────────────────────────────────────
+elBtnAddChar.addEventListener('click', () => {
+    const name = elCharName.value.trim();
+    if (!name) { elCharName.focus(); return; }
+    characters.push({ name, description: elCharDesc.value.trim(), imageUrl: pendingImageUrl });
+    renderChars();
+    elCharName.value = '';
+    elCharDesc.value = '';
+    elCharImgInput.value = '';
+    elCharImgLabel.textContent = '📷 फोटो';
+    elCharImgLabel.classList.remove('ready');
+    pendingImageUrl = null;
 });
 
-function renderCharacters() {
-    charList.innerHTML = characters.map((c, i) => `
+function renderChars() {
+    elCharList.innerHTML = characters.map((c, i) => `
         <div class="char-tag">
-            ${c.imageUrl ? `<img src="${c.imageUrl}" class="char-thumb">` : ''}
-            ${c.name} 
-            <button onclick="removeChar(${i})">&times;</button>
-        </div>
-    `).join('');
+            ${c.imageUrl ? `<img src="${c.imageUrl}" class="char-thumb" alt="${c.name}">` : ''}
+            <span>${c.name}</span>
+            <button onclick="removeChar(${i})" title="हटाएं">×</button>
+        </div>`).join('');
 }
 
-window.removeChar = (index) => {
-    characters.splice(index, 1);
-    renderCharacters();
-};
+window.removeChar = i => { characters.splice(i, 1); renderChars(); };
 
-// Generate Story
-generateStoryBtn.addEventListener('click', async () => {
-    const prompt = storyPrompt.value.trim();
-    if (!prompt) return alert('Please enter a story prompt!');
+// ─── Generate story ───────────────────────────────────────────────────────────
+elBtnGenStory.addEventListener('click', async () => {
+    const prompt = elStoryPrompt.value.trim();
+    if (!prompt) { elStoryPrompt.focus(); return; }
 
-    generateStoryBtn.disabled = true;
-    generateStoryBtn.innerText = 'Consulting the Oracle...';
+    elBtnGenStory.disabled = true;
+    elBtnGenStory.innerHTML = '<div class="spinner"></div> कहानी लिख रहे हैं...';
 
     try {
-        const response = await fetch('/api/generate-story', {
+        const res = await fetch('/api/generate-story', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ prompt, characters })
         });
-        
-        const data = await response.json();
-        if (!response.ok) {
-            throw new Error(data.error || 'Unknown error occurred');
-        }
-        
-        currentStory = data;
-        renderStoryPreview();
-    } catch (error) {
-        console.error(error);
-        alert(`Failed to generate story: ${error.message}`);
+
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || `Server error ${res.status}`);
+
+        story = data;
+        showStoryPreview();
+    } catch (e) {
+        alert(`कहानी बनाने में त्रुटि:\n${e.message}`);
+        console.error(e);
     } finally {
-        generateStoryBtn.disabled = false;
-        generateStoryBtn.innerText = 'Generate Story Concept';
+        elBtnGenStory.disabled = false;
+        elBtnGenStory.innerHTML = '<span class="btn-icon">✨</span> कहानी बनाएं';
     }
 });
 
-function renderStoryPreview() {
-    storyPreview.classList.remove('hidden');
-    previewTitle.innerText = currentStory.title;
-    scenesContainer.innerHTML = currentStory.scenes.map((scene, i) => `
-        <div class="scene-item">
-            <h4>Scene ${i + 1}</h4>
-            <p>${scene.narration}</p>
-        </div>
-    `).join('');
-    
-    // Smooth scroll to preview
-    storyPreview.scrollIntoView({ behavior: 'smooth' });
+function showStoryPreview() {
+    elStoryTitle.textContent = story.title;
+    elScenesList.innerHTML = story.scenes.map((s, i) => `
+        <div class="scene-card">
+            <div class="scene-num">दृश्य ${i + 1} • ${s.voice || 'alloy'}</div>
+            <p>${s.narration}</p>
+        </div>`).join('');
+    elStepPreview.classList.remove('hidden');
+    elStepPreview.scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
 
-// Create Video
-createVideoBtn.addEventListener('click', async () => {
-    if (!currentStory) return;
+// ─── Generate video ───────────────────────────────────────────────────────────
+elBtnMakeVideo.addEventListener('click', async () => {
+    if (!story) return;
 
-    videoSection.classList.remove('hidden');
-    videoLoader.classList.remove('hidden');
-    finalVideo.classList.add('hidden');
-    downloadLink.classList.add('hidden');
-    
-    videoSection.scrollIntoView({ behavior: 'smooth' });
+    elBtnMakeVideo.disabled = true;
+    elBtnMakeVideo.innerHTML = '<div class="spinner"></div> शुरू हो रहा है...';
+    elStepVideo.classList.remove('hidden');
+    elResultVideo.classList.add('hidden');
+    elDownloadBtn.classList.add('hidden');
+    setProgress(0, 'वीडियो बनाने की तैयारी...');
+    elStepVideo.scrollIntoView({ behavior: 'smooth', block: 'start' });
 
     try {
-        const response = await fetch('/api/generate-video', {
+        const res = await fetch('/api/generate-video', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ scenes: currentStory.scenes })
+            body: JSON.stringify({ scenes: story.scenes })
         });
-        
-        const { jobId } = await response.json();
-        if (jobId) {
-            pollVideoStatus(jobId);
-        } else {
-            throw new Error('No job ID returned');
+
+        if (!res.ok) {
+            const d = await res.json();
+            throw new Error(d.error || `Server error ${res.status}`);
         }
-    } catch (error) {
-        console.error(error);
-        alert('Video generation failed. Check server logs.');
-        videoLoader.classList.add('hidden');
+
+        const { jobId } = await res.json();
+        if (!jobId) throw new Error('Job ID नहीं मिला');
+        pollStatus(jobId);
+
+    } catch (e) {
+        alert(`वीडियो शुरू करने में त्रुटि:\n${e.message}`);
+        console.error(e);
+        elBtnMakeVideo.disabled = false;
+        elBtnMakeVideo.innerHTML = '<span class="btn-icon">🎬</span> 1 मिनट का वीडियो बनाएं';
     }
 });
 
-async function pollVideoStatus(jobId) {
-    const statusText = videoLoader.querySelector('p');
-    
-    const interval = setInterval(async () => {
+// ─── Polling ──────────────────────────────────────────────────────────────────
+function pollStatus(jobId) {
+    const timer = setInterval(async () => {
         try {
-            const response = await fetch(`/api/video-status/${jobId}`);
-            const data = await response.json();
-            
-            if (data.status === 'completed') {
-                clearInterval(interval);
-                finalVideo.src = data.videoUrl;
-                finalVideo.classList.remove('hidden');
-                videoLoader.classList.add('hidden');
-                downloadLink.href = data.videoUrl;
-                downloadLink.classList.remove('hidden');
-            } else if (data.status === 'failed') {
-                clearInterval(interval);
-                alert(`Generation failed: ${data.error}`);
-                videoLoader.classList.add('hidden');
+            const res = await fetch(`/api/video-status/${jobId}`);
+            const job = await res.json();
+
+            if (job.status === 'completed') {
+                clearInterval(timer);
+                setProgress(100, '✅ वीडियो तैयार है!');
+                elResultVideo.src = job.videoUrl;
+                elResultVideo.classList.remove('hidden');
+                elDownloadBtn.href = job.videoUrl;
+                elDownloadBtn.download = 'ai-kahani.mp4';
+                elDownloadBtn.classList.remove('hidden');
+                elBtnMakeVideo.disabled = false;
+                elBtnMakeVideo.innerHTML = '<span class="btn-icon">🎬</span> दोबारा बनाएं';
+
+            } else if (job.status === 'failed') {
+                clearInterval(timer);
+                alert(`वीडियो बनाने में त्रुटि:\n${job.error}`);
+                setProgress(0, '❌ त्रुटि हुई');
+                elBtnMakeVideo.disabled = false;
+                elBtnMakeVideo.innerHTML = '<span class="btn-icon">🎬</span> फिर कोशिश करें';
+
             } else {
-                statusText.innerHTML = `Brewing your cinematic experience... (${data.progress}%)<br><span class="small">(This takes a few minutes)</span>`;
+                setProgress(job.progress || 0, job.message || 'प्रक्रिया चल रही है...');
             }
-        } catch (error) {
-            console.error('Polling error:', error);
+        } catch (e) {
+            console.error('Polling error:', e);
         }
     }, 3000);
+}
+
+function setProgress(pct, msg) {
+    elProgressFill.style.width = `${pct}%`;
+    elProgressText.textContent = msg;
 }
