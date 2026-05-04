@@ -166,50 +166,59 @@ async function runVideoGeneration(jobId, scenes) {
         setProgress(5, 'Preparing assets...');
 
         const sceneAssets = [];
+        const assetPromises = scenes.map(async (scene, i) => {
+            console.log(`  Processing scene ${i + 1} assets in parallel...`);
+            
+            // Generate image and audio concurrently for this scene
+            const [imageUrl, audio] = await Promise.all([
+                (async () => {
+                    let url;
+                    const safePrompt = scene.visual_prompt + ', animated cartoon style, family-friendly, vibrant colors, no humans, no real people, no copyrighted characters';
+                    // Try the primary prompt, then fallback
+                    for (const prompt of [safePrompt, 'Beautiful colorful jungle landscape, animated cartoon style, vibrant, cinematic']) {
+                        try {
+                            const imgResp = await openai.images.generate({
+                                model: 'dall-e-3',
+                                prompt,
+                                n: 1,
+                                size: '1024x1024',
+                                quality: 'standard'
+                            });
+                            url = imgResp.data[0].url;
+                            break;
+                        } catch (e) {
+                            console.warn(`  ⚠️ Scene ${i+1} image attempt failed: ${e.message.slice(0, 60)}`);
+                        }
+                    }
+                    if (!url) throw new Error(`Failed to generate image for scene ${i + 1}`);
+                    return url;
+                })(),
+                openai.audio.speech.create({
+                    model: 'tts-1',
+                    voice: scene.voice || 'alloy',
+                    input: scene.narration,
+                    speed: 0.9
+                })
+            ]);
 
-        for (let i = 0; i < scenes.length; i++) {
-            const scene = scenes[i];
-            const pct = Math.round(10 + (i / scenes.length) * 60);
-            setProgress(pct, `Generating scene ${i + 1} of ${scenes.length}...`);
-
-            // Generate image with safety fallback
-            let imageUrl;
-            const safePrompt = scene.visual_prompt + ', animated cartoon style, family-friendly, vibrant colors, no humans, no real people, no copyrighted characters';
-            for (const prompt of [safePrompt, 'Beautiful colorful jungle landscape, animated cartoon style, vibrant, cinematic']) {
-                try {
-                    const imgResp = await openai.images.generate({
-                        model: 'dall-e-3',
-                        prompt,
-                        n: 1,
-                        size: '1024x1024',
-                        quality: 'standard'
-                    });
-                    imageUrl = imgResp.data[0].url;
-                    break;
-                } catch (e) {
-                    console.warn(`  ⚠️  Image attempt failed: ${e.message.slice(0, 60)}`);
-                }
-            }
-
-            if (!imageUrl) throw new Error(`Failed to generate image for scene ${i + 1}`);
-
-            // Download image
+            // Save image
             const imgPath = path.join(tempDir, `scene_${i}.jpg`);
             const imgData = await fetch(imageUrl);
             fs.writeFileSync(imgPath, Buffer.from(await imgData.arrayBuffer()));
 
-            // Generate audio
+            // Save audio
             const audioPath = path.join(tempDir, `scene_${i}.mp3`);
-            const audio = await openai.audio.speech.create({
-                model: 'tts-1',
-                voice: scene.voice || 'alloy',
-                input: scene.narration,
-                speed: 0.9
-            });
             fs.writeFileSync(audioPath, Buffer.from(await audio.arrayBuffer()));
 
-            sceneAssets.push({ image: imgPath, audio: audioPath });
-        }
+            return { index: i, image: imgPath, audio: audioPath };
+        });
+
+        // Wait for all scenes to finish asset generation
+        const results = await Promise.all(assetPromises);
+        // Ensure they are in the correct order
+        results.sort((a, b) => a.index - b.index).forEach(res => {
+            sceneAssets.push({ image: res.image, audio: res.audio });
+        });
 
         setProgress(70, 'Processing video scenes...');
 
@@ -231,6 +240,8 @@ async function runVideoGeneration(jobId, scenes) {
                         '-map [v]',
                         '-map 1:a',
                         '-c:v libx264',
+                        '-preset superfast',
+                        '-crf 23',
                         '-c:a aac',
                         '-pix_fmt yuv420p',
                         '-shortest',
