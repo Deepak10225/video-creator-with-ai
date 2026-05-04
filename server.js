@@ -80,19 +80,19 @@ app.post('/api/generate-story', async (req, res) => {
         const systemPrompt = `You are a creative storyteller. Generate a detailed story (5-6 scenes) based on the user's prompt and characters.
 Aim for a total duration of approximately 1 minute. Each scene should have descriptive narration (approx 20-30 words each).
 IMPORTANT: The story (narration and title) MUST be in Hindi.
+Visual Prompts: Create DALL-E 3 prompts in ENGLISH. Ensure they are cinematic, safe, and do not violate copyright or safety guidelines. Avoid gore, hyper-realism, or controversial themes.
 Return ONLY a JSON object with the following structure:
 {
   "title": "Hindi Story Title",
   "scenes": [
     {
-      "narration": "The detailed spoken text for this scene in Hindi (at least 2-3 sentences).",
+      "narration": "The detailed spoken text for this scene in Hindi.",
       "voice": "One of: alloy, echo, fable, onyx, nova, shimmer.",
-      "visual_prompt": "A detailed DALL-E 3 prompt in ENGLISH to generate a cinematic, high-quality image for this scene. Include character visual descriptions to keep them consistent.",
+      "visual_prompt": "A safe, cinematic DALL-E 3 prompt in ENGLISH.",
       "duration": 10
     }
   ]
-}
-`;
+}`;
 
         const response = await openai.chat.completions.create({
             model: "gpt-4o",
@@ -155,15 +155,29 @@ async function generateVideoBackground(jobId, scenes) {
             jobs[jobId].progress = Math.round((i / (scenes.length * 2)) * 100);
 
             // Generate Image
-            const imageResponse = await openai.images.generate({
-                model: "dall-e-3",
-                prompt: scene.visual_prompt,
-                n: 1,
-                size: "1024x1024",
-            });
-            const imageUrl = imageResponse.data[0].url;
-            const imagePath = path.join(tempDir, `scene_${i}.png`);
+            let imageUrl;
+            try {
+                const imageResponse = await openai.images.generate({
+                    model: "dall-e-3",
+                    prompt: scene.visual_prompt,
+                    n: 1,
+                    size: "1024x1024",
+                });
+                imageUrl = imageResponse.data[0].url;
+            } catch (imgError) {
+                console.error(`Image generation failed for scene ${i}:`, imgError.message);
+                // If it's a safety error, try a generic safe fallback
+                const fallbackPrompt = "A beautiful cinematic digital art landscape, soft lighting, peaceful atmosphere";
+                const fallbackResponse = await openai.images.generate({
+                    model: "dall-e-3",
+                    prompt: fallbackPrompt,
+                    n: 1,
+                    size: "1024x1024",
+                });
+                imageUrl = fallbackResponse.data[0].url;
+            }
             
+            const imagePath = path.join(tempDir, `scene_${i}.png`);
             const imgRes = await fetch(imageUrl);
             const imgBuffer = Buffer.from(await imgRes.arrayBuffer());
             fs.writeFileSync(imagePath, imgBuffer);
