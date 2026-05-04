@@ -45,30 +45,48 @@ app.post('/api/upload-character', upload.single('image'), (req, res) => {
 app.post('/api/generate-story', async (req, res) => {
     try {
         const { prompt, characters } = req.body;
+        if (!prompt) return res.status(400).json({ error: 'Prompt is required' });
+
+        console.log(`Generating story for prompt: "${prompt}"`);
         
         // Analyze character images if they exist
         const analyzedCharacters = await Promise.all(characters.map(async (char) => {
             if (char.imageUrl) {
-                console.log(`Analyzing character image for ${char.name}...`);
-                const imagePath = path.join(__dirname, 'public', char.imageUrl);
-                const base64Image = fs.readFileSync(imagePath).toString('base64');
-                
-                const visionResponse = await openai.chat.completions.create({
-                    model: "gpt-4o",
-                    messages: [
-                        {
-                            role: "user",
-                            content: [
-                                { type: "text", text: "Describe this character's appearance in detail for an image generation prompt. Focus on hair, clothes, facial features, and style. Keep it concise." },
-                                {
-                                    type: "image_url",
-                                    image_url: { url: `data:image/png;base64,${base64Image}` }
-                                }
-                            ],
-                        },
-                    ],
-                });
-                char.visualDescription = visionResponse.choices[0].message.content;
+                try {
+                    console.log(`Analyzing character image for ${char.name}...`);
+                    // Fix path: remove leading slash if present
+                    const relativePath = char.imageUrl.startsWith('/') ? char.imageUrl.substring(1) : char.imageUrl;
+                    const imagePath = path.join(__dirname, 'public', relativePath);
+                    
+                    if (!fs.existsSync(imagePath)) {
+                        console.warn(`Character image not found at ${imagePath}`);
+                        return char;
+                    }
+
+                    const base64Image = fs.readFileSync(imagePath).toString('base64');
+                    const extension = path.extname(imagePath).replace('.', '') || 'png';
+                    
+                    const visionResponse = await openai.chat.completions.create({
+                        model: "gpt-4o",
+                        messages: [
+                            {
+                                role: "user",
+                                content: [
+                                    { type: "text", text: "Describe this character's appearance in detail for an image generation prompt. Focus on hair, clothes, facial features, and style. Keep it concise." },
+                                    {
+                                        type: "image_url",
+                                        image_url: { url: `data:image/${extension};base64,${base64Image}` }
+                                    }
+                                ],
+                            },
+                        ],
+                    });
+                    char.visualDescription = visionResponse.choices[0].message.content;
+                    console.log(`Successfully analyzed ${char.name}`);
+                } catch (visionErr) {
+                    console.error(`Vision analysis failed for ${char.name}:`, visionErr.message);
+                    // Continue without visual description if vision fails
+                }
             }
             return char;
         }));
@@ -94,6 +112,7 @@ Return ONLY a JSON object with the following structure:
   ]
 }`;
 
+        console.log("Calling GPT-4o for story generation...");
         const response = await openai.chat.completions.create({
             model: "gpt-4o",
             messages: [
@@ -104,10 +123,11 @@ Return ONLY a JSON object with the following structure:
         });
 
         const story = JSON.parse(response.choices[0].message.content);
+        console.log("Story generated successfully!");
         res.json(story);
     } catch (error) {
         console.error('Error generating story:', error);
-        res.status(500).json({ error: 'Failed to generate story' });
+        res.status(500).json({ error: error.message || 'Failed to generate story' });
     }
 });
 
