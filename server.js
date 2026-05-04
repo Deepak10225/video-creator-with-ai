@@ -77,8 +77,8 @@ app.post('/api/generate-story', async (req, res) => {
             ? `Characters: ${analyzedCharacters.map(c => `${c.name} (${c.description}). Visual Description: ${c.visualDescription || 'Not provided'}`).join(', ')}`
             : '';
 
-        const systemPrompt = `You are a creative storyteller. Generate a long, detailed story (10-12 scenes) based on the user's prompt and characters.
-Aim for a total duration of approximately 2 minutes. Each scene should have descriptive, lengthy narration (approx 30-40 words each).
+        const systemPrompt = `You are a creative storyteller. Generate a detailed story (5-6 scenes) based on the user's prompt and characters.
+Aim for a total duration of approximately 1 minute. Each scene should have descriptive narration (approx 20-30 words each).
 IMPORTANT: The story (narration and title) MUST be in Hindi.
 Return ONLY a JSON object with the following structure:
 {
