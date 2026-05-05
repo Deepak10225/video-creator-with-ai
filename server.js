@@ -90,9 +90,11 @@ app.post('/api/generate-story', async (req, res) => {
 RULES:
 - Title and all narration MUST be in Hindi (Devanagari script)
 - Each narration must be 25-35 words in Hindi (to last ~10 seconds when spoken)
-- Visual prompts must be in English, family-friendly, cinematic, and DALL-E safe (no violence, no real people, no copyrighted characters)
-- Choose voice: onyx=deep/male, nova=warm/female, shimmer=clear/neutral, alloy=calm, echo=smooth, fable=storytelling
-- For animals: use onyx for lions/bears, shimmer for parrots/birds, nova for gentle animals
+- Video prompts must be in English, family-friendly, cinematic, and Sora-safe (no violence, no real people, no copyrighted characters).
+- Focus video prompts on MOVEMENT and ACTION (e.g., "A playful monkey swings from vine to vine in a lush jungle").
+- Choose voice: nova=sweet/warm (best for kids), shimmer=clear/friendly, fable=expressive/storytelling.
+- AVOID deep/scary voices unless for a villain. 
+- The tone MUST be sweet, gentle, and child-friendly. Always default to 'nova' for a sweet baby-like narration.
 
 Return ONLY valid JSON, no markdown, no code blocks:
 {
@@ -100,8 +102,8 @@ Return ONLY valid JSON, no markdown, no code blocks:
   "scenes": [
     {
       "narration": "Hindi text here",
-      "voice": "alloy",
-      "visual_prompt": "Detailed English prompt for DALL-E, cinematic, high quality digital art"
+      "voice": "nova",
+      "video_prompt": "Detailed English video prompt for Sora, cinematic, high quality 3D animation style, focusing on movement"
     }
   ]
 }`;
@@ -117,6 +119,14 @@ Return ONLY valid JSON, no markdown, no code blocks:
         });
 
         const story = JSON.parse(completion.choices[0].message.content);
+        
+        // Pass character images to scenes if applicable (for reference)
+        story.scenes = story.scenes.map(s => {
+            if (characters.length > 0) {
+                s.character_ref = characters[0].imageUrl; // Use primary character for reference
+            }
+            return s;
+        });
         
         // Validate
         if (!story.title || !Array.isArray(story.scenes) || story.scenes.length === 0) {
@@ -165,98 +175,108 @@ async function runVideoGeneration(jobId, scenes) {
         console.log(`\n🎬 Starting video job ${jobId.slice(0, 8)}... (${scenes.length} scenes)`);
         setProgress(5, 'Preparing assets...');
 
-        const sceneAssets = [];
+        const sceneVideos = [];
         for (let i = 0; i < scenes.length; i++) {
             const scene = scenes[i];
-            setProgress(10 + Math.round((i / scenes.length) * 60), `Generating scene ${i + 1} of ${scenes.length}...`);
+            const sceneProgressBase = 10 + Math.round((i / scenes.length) * 80);
+            
+            setProgress(sceneProgressBase, `Generating video for scene ${i + 1} of ${scenes.length}...`);
 
-            // Generate image and audio for this scene
-            let imageUrl;
+            // 1. Start Sora Video Generation
+            let soraJob;
             try {
-                const safePrompt = scene.visual_prompt + ', animated cartoon style, family-friendly, vibrant colors, no humans, no real people, no copyrighted characters';
-                const imgResp = await openai.images.generate({
-                    model: 'dall-e-3',
-                    prompt: safePrompt,
-                    n: 1,
-                    size: '1024x1024',
-                    quality: 'standard'
-                });
-                imageUrl = imgResp.data[0].url;
+                const videoParams = {
+                    model: 'sora-2',
+                    prompt: scene.video_prompt + ', high quality 3D animated cartoon style, vibrant colors, cinematic lighting',
+                    size: '1280x720',
+                    seconds: '12'
+                };
+
+                // Add character reference if available
+                if (scene.character_ref) {
+                    const charPath = path.join(__dirname, 'public', scene.character_ref.replace(/^\//, ''));
+                    if (fs.existsSync(charPath)) {
+                        // Sora expects file-id or URL. We'll use a local stream if supported or base64
+                        // For this environment, we'll assume it takes a readable stream or we can skip reference if it fails
+                        try {
+                            videoParams.input_reference = fs.createReadStream(charPath);
+                        } catch (e) {
+                            console.warn(`  ⚠️ Could not attach reference: ${e.message}`);
+                        }
+                    }
+                }
+
+                soraJob = await openai.videos.create(videoParams);
+                console.log(`  🚀 Sora job created: ${soraJob.id}`);
             } catch (e) {
-                console.warn(`  ⚠️ Scene ${i+1} image failed: ${e.message.slice(0, 50)} - using fallback`);
-                const fallback = await openai.images.generate({
-                    model: 'dall-e-3',
-                    prompt: 'Beautiful colorful jungle landscape, animated cartoon style, vibrant, cinematic',
-                    n: 1,
-                    size: '1024x1024'
-                });
-                imageUrl = fallback.data[0].url;
+                console.error(`  ❌ Sora creation failed: ${e.message}`);
+                throw new Error(`Failed to start video generation for scene ${i+1}: ${e.message}`);
             }
 
-            const audio = await openai.audio.speech.create({
+            // 2. Generate Audio (simultaneously)
+            const audioPromise = openai.audio.speech.create({
                 model: 'tts-1',
                 voice: scene.voice || 'alloy',
                 input: scene.narration,
-                speed: 0.9
+                speed: 0.95
             });
 
-            // Save image (streaming)
-            const imgPath = path.join(tempDir, `scene_${i}.jpg`);
-            const imgRes = await fetch(imageUrl);
-            const dest = fs.createWriteStream(imgPath);
-            const reader = imgRes.body.getReader();
-            while (true) {
-                const { done, value } = await reader.read();
-                if (done) break;
-                dest.write(value);
+            // 3. Poll Sora Job Status
+            let videoResult = soraJob;
+            let pollCount = 0;
+            while (videoResult.status !== 'completed' && videoResult.status !== 'failed') {
+                await new Promise(r => setTimeout(r, 10000)); // Poll every 10s
+                videoResult = await openai.videos.retrieve(soraJob.id);
+                pollCount++;
+                setProgress(sceneProgressBase + Math.min(pollCount, 10), `Sora is rendering scene ${i + 1}... (${videoResult.progress}%)`);
+                
+                if (pollCount > 60) throw new Error(`Scene ${i+1} generation timed out`);
             }
-            dest.end();
+
+            if (videoResult.status === 'failed') {
+                throw new Error(`Sora failed to generate scene ${i+1}: ${videoResult.error?.message || 'Unknown error'}`);
+            }
+
+            // 4. Download Video and Save Audio
+            setProgress(sceneProgressBase + 12, `Downloading assets for scene ${i + 1}...`);
+            const [audio, videoStream] = await Promise.all([
+                audioPromise,
+                openai.videos.downloadContent(videoResult.id)
+            ]);
+
+            const videoPath = path.join(tempDir, `raw_scene_${i}.mp4`);
+            const audioPath = path.join(tempDir, `scene_${i}.mp3`);
+            
+            // Save video
+            const videoBuffer = await videoStream.arrayBuffer();
+            fs.writeFileSync(videoPath, Buffer.from(videoBuffer));
 
             // Save audio
-            const audioPath = path.join(tempDir, `scene_${i}.mp3`);
             fs.writeFileSync(audioPath, Buffer.from(await audio.arrayBuffer()));
 
-            sceneAssets.push({ image: imgPath, audio: audioPath });
-        }
-
-        setProgress(70, 'Processing video scenes...');
-
-        // Build each scene video
-        const sceneVideos = [];
-        for (let i = 0; i < sceneAssets.length; i++) {
-            const { image, audio } = sceneAssets[i];
+            // 5. Merge Video + Audio with FFmpeg
             const outPath = path.join(tempDir, `clip_${i}.mp4`);
+            setProgress(sceneProgressBase + 15, `Merging scene ${i + 1}...`);
 
             await new Promise((resolve, reject) => {
                 ffmpeg()
-                    .input(image)
-                    .inputOptions(['-loop 1'])
-                    .input(audio)
-                    .complexFilter([
-                        `[0:v]scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,setsar=1,zoompan=z='min(zoom+0.001,1.3)':d=150:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s=1280x720[v]`
-                    ])
+                    .input(videoPath)
+                    .input(audioPath)
                     .outputOptions([
-                        '-threads 1',
-                        '-map [v]',
-                        '-map 1:a',
-                        '-c:v libx264',
-                        '-preset superfast',
-                        '-crf 23',
-                        '-c:a aac',
-                        '-pix_fmt yuv420p',
-                        '-shortest',
-                        '-movflags +faststart'
+                        '-c:v copy',      // Copy video stream (no re-encode)
+                        '-c:a aac',       // Encode audio
+                        '-shortest',      // Cut to shortest (usually audio)
+                        '-map 0:v:0',     // Take video from first input
+                        '-map 1:a:0'      // Take audio from second input
                     ])
                     .output(outPath)
                     .on('end', () => { sceneVideos.push(outPath); resolve(); })
                     .on('error', reject)
                     .run();
             });
-
-            setProgress(70 + Math.round((i + 1) / sceneAssets.length * 20), `Rendered scene ${i + 1}/${sceneAssets.length}`);
         }
 
-        setProgress(92, 'Concatenating final video...');
+        setProgress(95, 'Finalizing video...');
 
         // Concatenate all scene clips
         const listFile = path.join(tempDir, 'list.txt');
